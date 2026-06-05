@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || 'FlfRhXJ6dRu3VXmv1KLniJop0YVFBamZ';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://opencode.ai/zen/go/v1';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
