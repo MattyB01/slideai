@@ -7,18 +7,12 @@ import type { SlidePresentation, ChatMessage } from '@/types/slide';
 const BASE_URL = 'https://opencode.ai/zen/go/v1';
 const CHAT_ENDPOINT = `${BASE_URL}/chat/completions`;
 
-/** API key resolved from env or fallback demo key */
+/** API key resolved from env */
 function getApiKey(): string {
-  // Vite / Next.js public env
   if (typeof process !== 'undefined' && process.env?.DEEPSEEK_API_KEY) {
     return process.env.DEEPSEEK_API_KEY;
   }
-  // Next.js server-side env
-  if (typeof process !== 'undefined' && process.env?.DEEPSEEK_API_KEY) {
-    return process.env.DEEPSEEK_API_KEY;
-  }
-  // Fallback (development / demo)
-  return 'FlfRhXJ6dRu3VXmv1KLniJop0YVFBamZ';
+  return '';
 }
 
 /* ------------------------------------------------------------------ */

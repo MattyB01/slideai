@@ -61,7 +61,7 @@ export default function ChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, isChatLoading]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
     if (!text) return;
 
@@ -73,19 +73,39 @@ export default function ChatPanel() {
     };
     addChatMessage(userMsg);
     setInput('');
-
-    // Simulate assistant response
     setChatLoading(true);
-    setTimeout(() => {
+
+    try {
+      const presentation = useStore.getState().presentation;
+      const slideIndex = useStore.getState().activeSlideIndex;
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, slideIndex, presentation }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Chat failed');
+      }
+      const data = await res.json();
       const assistantMsg: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: `I've processed your request. Here's what I'd suggest:\n\n${text.length > 50 ? "I'll restructure the layout to improve visual hierarchy and readability." : "Let me adjust that for you."}`,
+        content: data.message || 'Done.',
         timestamp: new Date(),
       };
       addChatMessage(assistantMsg);
+    } catch (err: any) {
+      const assistantMsg: ChatMessage = {
+        id: generateId(),
+        role: 'assistant',
+        content: `⚠️ ${err.message}`,
+        timestamp: new Date(),
+      };
+      addChatMessage(assistantMsg);
+    } finally {
       setChatLoading(false);
-    }, 1200);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

@@ -51,10 +51,10 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
               : ''
         }`}
         style={{
-          left: el.x,
-          top: el.y,
-          width: el.width,
-          height: el.height,
+          left: `${el.x}%`,
+          top: `${el.y}%`,
+          width: `${el.width}%`,
+          height: `${el.height}%`,
           opacity: el.opacity,
           transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
           zIndex: el.zIndex,
@@ -94,10 +94,10 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
               : ''
         }`}
         style={{
-          left: el.x,
-          top: el.y,
-          width: el.width,
-          height: el.height,
+          left: `${el.x}%`,
+          top: `${el.y}%`,
+          width: `${el.width}%`,
+          height: `${el.height}%`,
           opacity: el.opacity,
           transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
           zIndex: el.zIndex,
@@ -164,10 +164,10 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
               : ''
         }`}
         style={{
-          left: el.x,
-          top: el.y,
-          width: el.width,
-          height: el.height,
+          left: `${el.x}%`,
+          top: `${el.y}%`,
+          width: `${el.width}%`,
+          height: `${el.height}%`,
           opacity: el.opacity,
           transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
           zIndex: el.zIndex,
