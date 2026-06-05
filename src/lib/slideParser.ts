@@ -39,6 +39,13 @@ function asBoolean(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+function includes<T extends string>(arr: readonly T[], val: string): val is T {
+  for (const item of arr) {
+    if (item === val) return true;
+  }
+  return false;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Element parsers                                                    */
 /* ------------------------------------------------------------------ */
@@ -66,7 +73,7 @@ function parseTextElement(raw: Record<string, unknown>): TextElement {
     fontWeight: raw.fontWeight === 'bold' ? 'bold' : 'normal',
     fontStyle: raw.fontStyle === 'italic' ? 'italic' : 'normal',
     color: asString(raw.color, '#000000'),
-    textAlign: (['left', 'center', 'right'] as const).includes(raw.textAlign as string)
+    textAlign: includes(['left', 'center', 'right'] as const, raw.textAlign as string)
       ? (raw.textAlign as 'left' | 'center' | 'right')
       : 'left',
     lineHeight: asNumber(raw.lineHeight, 1.4),
@@ -81,11 +88,11 @@ function parseImageElement(raw: Record<string, unknown>): ImageElement {
     type: 'image',
     src: asString(raw.src),
     alt: asString(raw.alt, ''),
-    objectFit: (['cover', 'contain', 'fill'] as const).includes(raw.objectFit as string)
+    objectFit: includes(['cover', 'contain', 'fill'] as const, raw.objectFit as string)
       ? (raw.objectFit as 'cover' | 'contain' | 'fill')
       : 'cover',
     borderRadius: raw.borderRadius !== undefined ? asNumber(raw.borderRadius) : undefined,
-    source: (['generated', 'stock', 'uploaded'] as const).includes(raw.source as string)
+    source: includes(['generated', 'stock', 'uploaded'] as const, raw.source as string)
       ? (raw.source as 'generated' | 'stock' | 'uploaded')
       : 'generated',
     attribution: raw.attribution !== undefined ? asString(raw.attribution) : undefined,
@@ -96,7 +103,7 @@ function parseShapeElement(raw: Record<string, unknown>): ShapeElement {
   return {
     ...parseBaseElement(raw),
     type: 'shape',
-    shape: (['rectangle', 'circle', 'triangle', 'line'] as const).includes(raw.shape as string)
+    shape: includes(['rectangle', 'circle', 'triangle', 'line'] as const, raw.shape as string)
       ? (raw.shape as 'rectangle' | 'circle' | 'triangle' | 'line')
       : 'rectangle',
     fill: asString(raw.fill, '#cccccc'),
