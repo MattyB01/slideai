@@ -129,7 +129,7 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
   };
 
   const renderShapeElement = (el: ShapeElement) => {
-    let borderRadius = 0;
+    let borderRadius: string | number = 0;
     let shapeStyle: React.CSSProperties = {};
 
     switch (el.shape) {
