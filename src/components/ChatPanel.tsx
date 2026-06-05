@@ -95,6 +95,10 @@ export default function ChatPanel() {
         timestamp: new Date(),
       };
       addChatMessage(assistantMsg);
+      // Apply changes to the presentation
+      if (data.changes?.length) {
+        useStore.getState().applyChanges(slideIndex, data.changes);
+      }
     } catch (err: any) {
       const assistantMsg: ChatMessage = {
         id: generateId(),

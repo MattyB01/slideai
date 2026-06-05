@@ -121,6 +121,8 @@ export interface EditorState {
   undo: () => void;
   addChatMessage: (msg: ChatMessage) => void;
   setChatLoading: (loading: boolean) => void;
+  applyChanges: (slideIndex: number, changes: import('@/types/slide').SlideChange[]) => void;
+  processResult: (presentation: SlidePresentation) => void;
   getActiveSlide: () => Slide | null;
   getActiveElement: () => SlideElement | null;
 }
@@ -312,6 +314,38 @@ export const useStore = create<EditorState>((set, get) => ({
   },
 
   setChatLoading: (loading) => set({ isChatLoading: loading }),
+
+  applyChanges: (slideIndex, changes) => {
+    set((state) => {
+      if (!state.presentation) return state;
+      const slides = state.presentation.slides.map((slide, idx) => {
+        if (idx !== slideIndex) return slide;
+        let updated = { ...slide, elements: [...slide.elements] };
+        for (const change of changes) {
+          if (change.elementId === null) {
+            // Slide-level change
+            (updated as any)[change.field] = change.value;
+          } else {
+            updated.elements = updated.elements.map((el) =>
+              el.id === change.elementId
+                ? ({ ...el, [change.field]: change.value } as SlideElement)
+                : el,
+            );
+          }
+        }
+        return updated;
+      });
+      const { history, historyIndex } = pushHistory(state.history, state.historyIndex, state.presentation);
+      return { presentation: { ...state.presentation, slides }, history, historyIndex };
+    });
+  },
+
+  processResult: (presentation) => {
+    set((state) => {
+      const { history, historyIndex } = pushHistory(state.history, state.historyIndex, state.presentation);
+      return { presentation, history, historyIndex };
+    });
+  },
 
   getActiveSlide: () => {
     const state = get();

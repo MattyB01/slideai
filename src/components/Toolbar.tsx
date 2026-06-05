@@ -26,18 +26,56 @@ export default function Toolbar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleExport = () => {
-    // Placeholder — in a real app this would trigger PPTX export
-    const blob = new Blob(
-      [JSON.stringify(presentation, null, 2)],
-      { type: 'application/json' },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${fileName || 'presentation'}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleExport = async () => {
+    const p = useStore.getState().presentation;
+    if (!p) return;
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presentation: p }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Export failed');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${fileName || 'presentation'}.pptx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(`Export error: ${err.message}`);
+    }
+  };
+
+  const [restyling, setRestyling] = useState(false);
+
+  const handleRestyle = async () => {
+    const p = useStore.getState().presentation;
+    if (!p) return;
+    setRestyling(true);
+    try {
+      const res = await fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presentation: p }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Restyle failed');
+      }
+      const data = await res.json();
+      if (data.presentation) {
+        useStore.getState().processResult(data.presentation);
+      }
+    } catch (err: any) {
+      alert(`Restyle error: ${err.message}`);
+    } finally {
+      setRestyling(false);
+    }
   };
 
   const displayName = fileName || presentation?.title || 'Untitled';
@@ -181,6 +219,28 @@ export default function Toolbar() {
           </div>
         )}
       </div>
+
+      {/* AI Restyle */}
+      <button
+        onClick={handleRestyle}
+        disabled={restyling}
+        className="
+          flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium
+          bg-gradient-to-r from-blue-600 to-purple-600 text-white
+          hover:from-blue-700 hover:to-purple-700 active:from-blue-800 active:to-purple-800
+          disabled:opacity-60 disabled:cursor-wait
+          transition-all duration-150
+        "
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3h.01" /><path d="M16.5 3h.01" /><path d="M20.5 4.5h.01" />
+          <path d="M19 8.5h.01" /><path d="M21 12h.01" /><path d="M18 16.5h.01" />
+          <path d="M6.5 19.5h.01" /><path d="M3 15h.01" /><path d="M4.5 9h.01" />
+          <path d="M3 6h.01" /><path d="M8.5 3h.01" />
+          <path d="m9 9 6 6" /><path d="m9 15 6-6" />
+        </svg>
+        {restyling ? 'Restyling…' : 'AI Restyle'}
+      </button>
 
       {/* Divider */}
       <div className="w-px h-5 bg-zinc-200" />
