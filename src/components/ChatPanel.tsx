@@ -80,7 +80,7 @@ export default function ChatPanel() {
       const assistantMsg: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: `I've processed your request. Here's what I'd suggest:\n\n${text.length > 50 ? 'I'll restructure the layout to improve visual hierarchy and readability.' : 'Let me adjust that for you.'}`,
+        content: `I've processed your request. Here's what I'd suggest:\n\n${text.length > 50 ? "I'll restructure the layout to improve visual hierarchy and readability." : "Let me adjust that for you."}`,
         timestamp: new Date(),
       };
       addChatMessage(assistantMsg);
