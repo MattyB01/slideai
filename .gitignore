@@ -44,3 +44,5 @@ yarn-error.log*
 next-env.d.ts
 /lib
 /types
+python-service/__pycache__/
+*.pyc
