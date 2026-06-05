@@ -58,7 +58,7 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
           opacity: el.opacity,
           transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
           zIndex: el.zIndex,
-          fontSize: el.fontSize,
+          fontSize: `${el.fontSize}pt`,
           fontFamily: el.fontFamily,
           fontWeight: el.fontWeight,
           fontStyle: el.fontStyle,
