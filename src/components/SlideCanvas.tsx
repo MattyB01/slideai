@@ -27,6 +27,12 @@ export default function SlideCanvas({ slide, isActive, scale = 1 }: SlideCanvasP
       case 'gradient':
         return { background: bg.value };
       case 'image':
+        // Handle __STOCK__: placeholders from AI — fall back to gradient
+        if (bg.value.startsWith('__STOCK__:') || bg.value.startsWith('__GENERATE__:')) {
+          return {
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          };
+        }
         return {
           backgroundImage: `url(${bg.value})`,
           backgroundSize: 'cover',
