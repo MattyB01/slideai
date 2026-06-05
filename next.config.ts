@@ -1,13 +1,5 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  experimental: {
-    // Disable Turbopack in favor of webpack
-  },
-  // Use the built-in webpack-based compiler (not SWC)
-  webpack: (config, { isServer }) => {
-    return config;
-  },
-};
+const nextConfig: NextConfig = {};
 
 export default nextConfig;
