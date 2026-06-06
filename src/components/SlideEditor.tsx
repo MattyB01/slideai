@@ -11,6 +11,8 @@ export default function SlideEditor() {
   const activeSlideIndex = useStore((s) => s.activeSlideIndex);
   const zoom = useStore((s) => s.zoom);
   const setZoom = useStore((s) => s.setZoom);
+  const isAILoading = useStore((s) => s.isAILoading);
+  const aiProgress = useStore((s) => s.aiProgress);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -110,13 +112,26 @@ export default function SlideEditor() {
         <span className="text-xs text-zinc-400 font-medium">{zoomPercent}</span>
       </div>
 
+      {/* AI processing live bar */}
+      {isAILoading && (
+        <div className="h-1 bg-blue-100 relative overflow-hidden shrink-0">
+          <div
+            className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full animate-pulse"
+            style={{
+              width: '100%',
+              transition: 'opacity 0.3s',
+            }}
+          />
+        </div>
+      )}
+
       {/* Canvas area */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-auto flex items-start justify-center p-8"
+        className={`flex-1 overflow-auto flex items-start justify-center p-8 transition-opacity duration-200 ${isAILoading ? 'opacity-95' : ''}`}
       >
         <div
-          className="shrink-0"
+          className="shrink-0 relative"
           style={{
             width: 960 * scale,
             height: 540 * scale,
@@ -132,6 +147,18 @@ export default function SlideEditor() {
           >
             <SlideCanvas slide={activeSlide} isActive={true} />
           </div>
+
+          {/* Live change badge */}
+          {isAILoading && aiProgress && (
+            <div className="absolute -top-3 -right-3 z-20">
+              <div className="bg-blue-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg whitespace-nowrap flex items-center gap-1">
+                <svg className="animate-spin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <circle cx="12" cy="12" r="10" strokeDasharray="31.4 31.4" strokeLinecap="round" />
+                </svg>
+                {aiProgress.changes} changes
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

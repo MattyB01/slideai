@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '@/lib/store';
+import { streamAI } from '@/lib/streamAI';
 import type { ChatMessage } from '@/types/slide';
 
 type ChatScope = 'slide' | 'all';
@@ -34,13 +35,19 @@ function generateId(): string {
 export default function ChatPanel() {
   const chatMessages = useStore((s) => s.chatMessages);
   const isChatLoading = useStore((s) => s.isChatLoading);
+  const isAILoading = useStore((s) => s.isAILoading);
   const addChatMessage = useStore((s) => s.addChatMessage);
   const setChatLoading = useStore((s) => s.setChatLoading);
   const processResult = useStore((s) => s.processResult);
-  const applyChanges = useStore((s) => s.applyChanges);
+  const setAILoading = useStore((s) => s.setAILoading);
+  const setAIProgress = useStore((s) => s.setAIProgress);
+  const pushHistorySnapshot = useStore((s) => s.pushHistorySnapshot);
+  const applyStreamChange = useStore((s) => s.applyStreamChange);
+  const applyThemeField = useStore((s) => s.applyThemeField);
 
   const [input, setInput] = useState('');
   const [scope, setScope] = useState<ChatScope>('slide');
+  const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -55,29 +62,50 @@ export default function ChatPanel() {
     const userMsg: ChatMessage = { id: generateId(), role: 'user', content: text, timestamp: new Date() };
     addChatMessage(userMsg);
     setInput('');
-    setChatLoading(true);
 
-    try {
+    if (scope === 'all') {
+      // Whole show: use streaming
+      const presentation = useStore.getState().presentation;
+      if (!presentation) return;
+
+      setChatLoading(true);
+      setAILoading(true);
+      pushHistorySnapshot();
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const prompt = `The user requests: "${text}". Please improve the entire presentation accordingly. Update theme, backgrounds, layouts, font sizing, and slide content as needed. Output the changes one per line as JSON.`;
+
+      await streamAI(
+        '/api/chat',
+        { message: prompt, slideIndex: -1, presentation, scope: 'all', stream: true },
+        {
+          onChange: (change) => useStore.getState().applyStreamChange(change as any),
+          onThemeChange: (field, value) => useStore.getState().applyThemeField(field, value),
+          onProgress: (changes) => setAIProgress({ changes }),
+          onDone: () => {
+            const msg: ChatMessage = { id: generateId(), role: 'assistant', content: '✅ Applied all changes.', timestamp: new Date() };
+            useStore.getState().addChatMessage(msg);
+          },
+          onError: (err) => {
+            const msg: ChatMessage = { id: generateId(), role: 'assistant', content: `⚠️ ${err.message}`, timestamp: new Date() };
+            useStore.getState().addChatMessage(msg);
+          },
+        },
+        controller.signal,
+      );
+
+      abortRef.current = null;
+      setChatLoading(false);
+      setAILoading(false);
+    } else {
+      // Single slide: existing behavior
       const presentation = useStore.getState().presentation;
       const slideIndex = useStore.getState().activeSlideIndex;
+      setChatLoading(true);
 
-      if (scope === 'all') {
-        // Whole slideshow: use the process endpoint
-        const prompt = `The user requests: "${text}". Please improve the entire presentation accordingly. Update theme, backgrounds, and slide content as needed. Return the full updated SlidePresentation JSON.`;
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: prompt, slideIndex: -1, presentation, scope: 'all' }),
-        });
-        if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || 'Chat failed'); }
-        const data = await res.json();
-        if (data.presentation) {
-          processResult(data.presentation);
-        }
-        const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: data.message || 'Updated the entire presentation.', timestamp: new Date() };
-        addChatMessage(assistantMsg);
-      } else {
-        // Single slide: existing behavior
+      try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -88,15 +116,24 @@ export default function ChatPanel() {
         const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: data.message || 'Done.', timestamp: new Date() };
         addChatMessage(assistantMsg);
         if (data.changes?.length) {
-          applyChanges(slideIndex, data.changes);
+          useStore.getState().applyChanges(slideIndex, data.changes);
         }
+      } catch (err: any) {
+        const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: `⚠️ ${err.message}`, timestamp: new Date() };
+        addChatMessage(assistantMsg);
+      } finally {
+        setChatLoading(false);
       }
-    } catch (err: any) {
-      const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: `⚠️ ${err.message}`, timestamp: new Date() };
-      addChatMessage(assistantMsg);
-    } finally {
-      setChatLoading(false);
     }
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setChatLoading(false);
+    setAILoading(false);
+    const msg: ChatMessage = { id: generateId(), role: 'assistant', content: '⏹️ Stopped by user.', timestamp: new Date() };
+    addChatMessage(msg);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -114,7 +151,8 @@ export default function ChatPanel() {
     inputRef.current?.focus();
   };
 
-  const emptyState = chatMessages.length === 0 && !isChatLoading;
+  const isLoading = isChatLoading || isAILoading;
+  const emptyState = chatMessages.length === 0 && !isLoading;
 
   return (
     <div className="flex flex-col h-full bg-white border-l border-zinc-200">
@@ -123,10 +161,10 @@ export default function ChatPanel() {
         <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">AI Assistant</h2>
         {/* Scope toggle */}
         <div className="flex items-center gap-1.5 mt-2 bg-zinc-100 rounded-lg p-0.5">
-          <button onClick={() => setScope('slide')} className={`flex-1 px-2 py-1 text-[11px] font-medium rounded-md transition-all ${scope === 'slide' ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+          <button onClick={() => setScope('slide')} disabled={isLoading} className={`flex-1 px-2 py-1 text-[11px] font-medium rounded-md transition-all ${scope === 'slide' ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'} ${isLoading ? 'opacity-40 cursor-not-allowed' : ''}`}>
             Current Slide
           </button>
-          <button onClick={() => setScope('all')} className={`flex-1 px-2 py-1 text-[11px] font-medium rounded-md transition-all ${scope === 'all' ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+          <button onClick={() => setScope('all')} disabled={isLoading} className={`flex-1 px-2 py-1 text-[11px] font-medium rounded-md transition-all ${scope === 'all' ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'} ${isLoading ? 'opacity-40 cursor-not-allowed' : ''}`}>
             Whole Show
           </button>
         </div>
@@ -146,14 +184,16 @@ export default function ChatPanel() {
           </div>
         )}
         {chatMessages.map((msg) => (<MessageBubble key={msg.id} message={msg} />))}
-        {isChatLoading && (
+        {isLoading && (
           <div className="flex justify-start mb-3">
             <div className="bg-zinc-100 rounded-2xl rounded-bl-md px-3.5 py-2.5">
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 animate-bounce" style={{ animationDelay: '0ms' }} />
                 <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 animate-bounce" style={{ animationDelay: '150ms' }} />
                 <div className="w-1.5 h-1.5 rounded-full bg-zinc-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                <span className="text-xs text-zinc-400 ml-1">Thinking...</span>
+                <span className="text-xs text-zinc-400 ml-1">
+                  {scope === 'all' ? 'Restyling slides…' : 'Thinking…'}
+                </span>
               </div>
             </div>
           </div>
@@ -161,7 +201,7 @@ export default function ChatPanel() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Quick actions */}
+      {/* Quick actions + Stop button */}
       {emptyState && (
         <div className="px-3 pb-2 shrink-0">
           <div className="flex flex-wrap gap-1.5">
@@ -176,9 +216,15 @@ export default function ChatPanel() {
       <div className="p-3 border-t border-zinc-100 shrink-0">
         <div className="flex items-end gap-2">
           <textarea ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={scope === 'slide' ? 'Edit this slide...' : 'Edit whole show...'} rows={1} className="flex-1 resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors duration-150" style={{ minHeight: 36, maxHeight: 120 }} />
-          <button onClick={handleSend} disabled={!input.trim() || isChatLoading} className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
-          </button>
+          {isLoading && scope === 'all' ? (
+            <button onClick={handleStop} className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-red-500 text-white hover:bg-red-600 active:bg-red-700 transition-colors duration-150">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            </button>
+          ) : (
+            <button onClick={handleSend} disabled={!input.trim() || isLoading} className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -103,6 +103,8 @@ export interface EditorState {
   zoom: number;
   chatMessages: ChatMessage[];
   isChatLoading: boolean;
+  isAILoading: boolean;
+  aiProgress: { changes: number } | null;
   history: SlidePresentation[];
   historyIndex: number;
 
@@ -125,6 +127,13 @@ export interface EditorState {
   processResult: (presentation: SlidePresentation) => void;
   getActiveSlide: () => Slide | null;
   getActiveElement: () => SlideElement | null;
+
+  // Streaming support
+  setAILoading: (loading: boolean) => void;
+  setAIProgress: (progress: { changes: number } | null) => void;
+  pushHistorySnapshot: () => void;
+  applyStreamChange: (change: import('@/types/slide').SlideChange) => void;
+  applyThemeField: (field: string, value: unknown) => void;
 }
 
 function generateId(): string {
@@ -164,6 +173,8 @@ export const useStore = create<EditorState>((set, get) => ({
   zoom: 100,
   chatMessages: [],
   isChatLoading: false,
+  isAILoading: false,
+  aiProgress: null,
   history: [],
   historyIndex: -1,
 
@@ -358,6 +369,77 @@ export const useStore = create<EditorState>((set, get) => ({
     const slide = state.getActiveSlide();
     if (!slide || !state.selectedElementId) return null;
     return slide.elements.find((el) => el.id === state.selectedElementId) ?? null;
+  },
+
+  // === Streaming support ===
+
+  setAILoading: (loading) => set({ isAILoading: loading, aiProgress: loading ? { changes: 0 } : null }),
+
+  setAIProgress: (progress) => set({ aiProgress: progress }),
+
+  pushHistorySnapshot: () => {
+    set((state) => {
+      const { history, historyIndex } = pushHistory(state.history, state.historyIndex, state.presentation);
+      return { history, historyIndex };
+    });
+  },
+
+  applyStreamChange: (change) => {
+    set((state) => {
+      if (!state.presentation) return state;
+
+      const slides = state.presentation.slides.map((slide, idx) => {
+        if (idx !== change.slideIndex) return slide;
+
+        if (change.elementId === null) {
+          // Slide-level change, support dotted paths (e.g. "background.value")
+          if (change.field.includes('.')) {
+            const parts = change.field.split('.');
+            const [parent, ...rest] = parts;
+            if (parts.length === 2) {
+              return {
+                ...slide,
+                [parent]: { ...(slide as any)[parent], [rest[0]]: change.value },
+              };
+            }
+            // Nested path: background.gradient.colors[0] etc
+            let obj = { ...slide };
+            let current = obj as any;
+            for (let i = 0; i < parts.length - 1; i++) {
+              current[parts[i]] = { ...current[parts[i]] };
+              current = current[parts[i]];
+            }
+            current[parts[parts.length - 1]] = change.value;
+            return obj;
+          }
+          return { ...slide, [change.field]: change.value };
+        }
+
+        // Element-level change
+        return {
+          ...slide,
+          elements: slide.elements.map((el) =>
+            el.id === change.elementId
+              ? ({ ...el, [change.field]: change.value } as SlideElement)
+              : el,
+          ),
+        };
+      });
+
+      return { presentation: { ...state.presentation, slides } };
+    });
+  },
+
+  applyThemeField: (field, value) => {
+    set((state) => {
+      if (!state.presentation) return state;
+      return {
+        presentation: {
+          ...state.presentation,
+          theme: { ...state.presentation.theme, [field]: value },
+        },
+      };
+    });
   },
 }));
 
