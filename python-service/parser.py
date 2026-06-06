@@ -78,8 +78,28 @@ def _extract_color_from_fill(fill) -> Optional[str]:
     return None
 
 
-def _get_color_str(run) -> str:
-    """Extract colour from a text run, returning a hex or theme string."""
+def _extract_paragraph_font_color(paragraph) -> Optional[str]:
+    """Extract colour from paragraph-level font, returning hex or theme string."""
+    try:
+        pf = paragraph.font
+        if pf.color and pf.color.type is not None:
+            try:
+                rgb = pf.color.rgb
+                return f"#{rgb}"
+            except Exception:
+                pass
+            try:
+                tc = pf.color.theme_color
+                return f"theme:{tc}"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def _extract_run_font_color(run) -> Optional[str]:
+    """Extract colour from a text run, returning hex or theme string."""
     try:
         font = run.font
         if font.color and font.color.type is not None:
@@ -95,13 +115,32 @@ def _get_color_str(run) -> str:
                 pass
     except Exception:
         pass
-    return "#000000"
+    return None
 
 
-def _get_font_size_pt(run) -> Optional[float]:
-    """Extract font size in points from a run."""
+def _get_color_str(font_obj) -> Optional[str]:
+    """Extract colour from a font object (run or paragraph), returning a hex or theme string."""
     try:
-        sz = run.font.size
+        if font_obj.color and font_obj.color.type is not None:
+            try:
+                rgb = font_obj.color.rgb
+                return f"#{rgb}"
+            except Exception:
+                pass
+            try:
+                tc = font_obj.color.theme_color
+                return f"theme:{tc}"
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def _get_font_size_pt(font_obj) -> Optional[float]:
+    """Extract font size in points from a font object (run or paragraph)."""
+    try:
+        sz = font_obj.size
         if sz is not None:
             return round(sz.pt, 1)
     except Exception:
@@ -109,12 +148,97 @@ def _get_font_size_pt(run) -> Optional[float]:
     return None
 
 
-def _get_font_name(run) -> Optional[str]:
-    """Extract font name from a run."""
+def _get_font_name(font_obj) -> Optional[str]:
+    """Extract font name from a font object (run or paragraph)."""
     try:
-        return run.font.name
+        return font_obj.name
     except Exception:
         return None
+
+
+def _get_formatted_text_content(paragraph, master_defaults: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Extract text and formatting from a paragraph, falling back from run to paragraph level.
+    
+    Falls back through: run → paragraph → master_defaults (slide master txStyles).
+    """
+    text = ""
+    font_family = None
+    font_size = None
+    color = None
+    bold = False
+    italic = False
+
+    runs = _safe_text_runs(paragraph)
+    for run in runs:
+        text += run.text
+        # Try run-level formatting first
+        if font_family is None:
+            ff = _get_font_name(run)
+            if ff:
+                font_family = ff
+        if font_size is None:
+            fs = _get_font_size_pt(run)
+            if fs:
+                font_size = fs
+        if color is None:
+            c = _get_color_str(run)
+            if c:
+                color = c
+        if run.font.bold:
+            bold = True
+        if run.font.italic:
+            italic = True
+
+    # Fall back to paragraph-level formatting if run-level was missing
+    if (font_family is None or font_size is None or color is None) and runs:
+        pf = paragraph.font
+        if font_family is None:
+            ff = _get_font_name(pf)
+            if ff:
+                font_family = ff
+        if font_size is None:
+            fs = _get_font_size_pt(pf)
+            if fs:
+                font_size = fs
+        if color is None:
+            c = _get_color_str(pf)
+            if c:
+                color = c
+
+    # Handle paragraphs with no explicit runs (text in paragraph element directly)
+    if not runs:
+        text = paragraph.text
+        pf = paragraph.font
+        if font_family is None:
+            ff = _get_font_name(pf)
+            if ff:
+                font_family = ff
+        if font_size is None:
+            fs = _get_font_size_pt(pf)
+            if fs:
+                font_size = fs
+        if color is None:
+            c = _get_color_str(pf)
+            if c:
+                color = c
+
+    # Final fallback: master default text styles
+    if master_defaults:
+        if font_family is None:
+            font_family = master_defaults.get("fontFamily")
+        if font_size is None:
+            font_size = master_defaults.get("fontSize")
+        if color is None:
+            color = master_defaults.get("color")
+
+    return {
+        "text": text,
+        "fontFamily": font_family,
+        "fontSize": font_size,
+        "color": color or "#000000",
+        "bold": bold,
+        "italic": italic,
+    }
 
 
 def _get_alignment(paragraph) -> str:
@@ -150,58 +274,135 @@ def _content_type_to_ext(ct: str) -> str:
     return mapping.get(ct, "png")
 
 
+# ─── Theme Colour Resolution ──────────────────────────────────────────────────
+
+
+def _build_theme_color_map(prs: Presentation) -> Dict[str, str]:
+    """Build a map of theme color names to hex values from the theme XML."""
+    color_map = {}
+    try:
+        # Access the theme part via the slide master
+        if prs.slide_masters:
+            master_part = prs.slide_masters[0].part
+            # The theme is stored in the slide master's package part
+            # python-pptx stores theme data internally
+            theme_part = None
+            for rel in master_part.rels.values():
+                if "theme" in rel.reltype:
+                    theme_part = rel.target_part
+                    break
+
+            if theme_part is None:
+                return color_map
+
+            theme_xml = theme_part._element.xml
+            clr_scheme = theme_part._element.find(qn("a:clrScheme"))
+            if clr_scheme is None:
+                return color_map
+
+            for child in clr_scheme:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                srgb = child.find(qn("a:srgbClr"))
+                if srgb is not None:
+                    color_map[tag.lower()] = f"#{srgb.get('val')}"
+                else:
+                    sysClr = child.find(qn("a:sysClr"))
+                    if sysClr is not None:
+                        color_map[tag.lower()] = sysClr.get("val", "#000000")
+    except Exception as e:
+        logger.debug(f"Failed to build theme color map: {e}")
+
+    return color_map
+
+
+def _resolve_theme_color(color_str: str, theme_color_map: Dict[str, str]) -> str:
+    """Resolve a 'theme:DARK_1' or 'theme:DARK_1 (1)' string to a hex color."""
+    if not color_str or not color_str.startswith("theme:"):
+        return color_str
+
+    # Strip the "theme:" prefix and any parenthetical suffix like " (1)"
+    name = color_str[6:].split("(")[0].strip().lower()
+
+    # Map theme color names to XML tag names
+    theme_name_map = {
+        "dk1": "dk1",
+        "dark1": "dk1",
+        "dark_1": "dk1",
+        "lt1": "lt1",
+        "light1": "lt1",
+        "light_1": "lt1",
+        "dk2": "dk2",
+        "dark2": "dk2",
+        "dark_2": "dk2",
+        "lt2": "lt2",
+        "light2": "lt2",
+        "light_2": "lt2",
+        "accent1": "accent1",
+        "accent2": "accent2",
+        "accent3": "accent3",
+        "accent4": "accent4",
+        "accent5": "accent5",
+        "accent6": "accent6",
+        "hlink": "hlink",
+        "hyperlink": "hlink",
+        "folhlink": "folhlink",
+        "followedhyperlink": "folhlink",
+    }
+
+    tag = theme_name_map.get(name)
+    if tag and tag in theme_color_map:
+        return theme_color_map[tag]
+
+    return "#000000"
+
+
+def _resolve_all_theme_colors(data: Any, theme_color_map: Dict[str, str]) -> Any:
+    """Recursively resolve theme:xxx color strings in a data structure."""
+    if isinstance(data, dict):
+        resolved = {}
+        for k, v in data.items():
+            if isinstance(v, str) and v.startswith("theme:"):
+                resolved[k] = _resolve_theme_color(v, theme_color_map)
+            else:
+                resolved[k] = _resolve_all_theme_colors(v, theme_color_map)
+        return resolved
+    elif isinstance(data, list):
+        return [_resolve_all_theme_colors(item, theme_color_map) for item in data]
+    elif isinstance(data, str) and data.startswith("theme:"):
+        return _resolve_theme_color(data, theme_color_map)
+    return data
+
+
 # ─── Background Extraction ────────────────────────────────────────────────────
 
 
-def extract_background(
-    slide, slide_width_emu: int, slide_height_emu: int
-) -> Dict[str, str]:
-    """
-    Extract the background of a slide.
-
-    Returns {"type": "color"|"gradient"|"image", "value": "..."}
-    """
+def _extract_background_from_layout(slide) -> Optional[Dict[str, str]]:
+    """Try to extract background from the slide's layout."""
     try:
-        bg = slide.background
+        layout = slide.slide_layout
+        bg = layout.background
         fill = bg.fill
         if fill.type is None:
-            return {"type": "color", "value": "#FFFFFF"}
+            return None
 
-        # SOLID_FILL
         if fill.type == 1:
             color = _extract_color_from_fill(fill)
             if color:
                 return {"type": "color", "value": color}
-            return {"type": "color", "value": "#FFFFFF"}
 
-        # GRADIENT_FILL
         if fill.type == 2:
-            # Try to construct a gradient string from the fill XML
             grad_str = _extract_gradient_string(fill)
             return {"type": "gradient", "value": grad_str}
 
-        # PICTURE_FILL / PATTERNED_FILL
         if fill.type in (3, 4):
             try:
-                xml = fill._fill.xml
-                blip_elems = list(
-                    fill._fill.findall(
-                        qn("a:blipFill") + "/" + qn("a:blip")
-                    )
-                ) or list(
-                    fill._fill.findall(qn("a:blip"))
-                )
-                # Also try parent-level blip
-                if not blip_elems:
-                    blip_elems = fill._fill.findall(
-                        ".//" + qn("a:blip")
-                    )
+                blip_elems = fill._fill.findall(".//" + qn("a:blip"))
                 for blip in blip_elems:
                     r_id = blip.get(qn("r:embed")) or blip.get(
                         "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
                     )
                     if r_id:
-                        rel = slide.part.related_part(r_id)
+                        rel = layout.part.related_part(r_id)
                         blob = rel.blob
                         ct = getattr(rel, "content_type", "image/png")
                         b64 = base64.b64encode(blob).decode("utf-8")
@@ -211,9 +412,62 @@ def extract_background(
                         }
             except Exception:
                 pass
-            return {"type": "image", "value": ""}
     except Exception:
         pass
+    return None
+
+
+def extract_background(
+    slide, slide_width_emu: int, slide_height_emu: int, embed_images: bool = True
+) -> Dict[str, str]:
+    """
+    Extract the background of a slide.
+
+    Returns {"type": "color"|"gradient"|"image", "value": "..."}
+    Tries slide level first, then falls back to layout level.
+    """
+    try:
+        bg = slide.background
+        fill = bg.fill
+        if fill.type is not None:
+            # SOLID_FILL
+            if fill.type == 1:
+                color = _extract_color_from_fill(fill)
+                if color:
+                    return {"type": "color", "value": color}
+
+            # GRADIENT_FILL
+            if fill.type == 2:
+                grad_str = _extract_gradient_string(fill)
+                return {"type": "gradient", "value": grad_str}
+
+            # PICTURE_FILL / PATTERNED_FILL
+            if fill.type in (3, 4) and embed_images:
+                try:
+                    blip_elems = fill._fill.findall(".//" + qn("a:blip"))
+                    for blip in blip_elems:
+                        r_id = blip.get(qn("r:embed")) or blip.get(
+                            "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+                        )
+                        if r_id:
+                            rel = slide.part.related_part(r_id)
+                            blob = rel.blob
+                            ct = getattr(rel, "content_type", "image/png")
+                            b64 = base64.b64encode(blob).decode("utf-8")
+                            return {
+                                "type": "image",
+                                "value": f"data:{ct};base64,{b64}",
+                            }
+                except Exception:
+                    pass
+                return {"type": "image", "value": ""}
+    except Exception:
+        pass
+
+    # Fall back to layout-level background
+    layout_bg = _extract_background_from_layout(slide)
+    if layout_bg:
+        return layout_bg
 
     return {"type": "color", "value": "#FFFFFF"}
 
@@ -258,48 +512,40 @@ def _extract_gradient_string(fill) -> str:
 
 
 def extract_text_element(
-    shape, slide_width_emu: int, slide_height_emu: int
+    shape, slide_width_emu: int, slide_height_emu: int,
+    master_defaults: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Convert a shape with a text frame into a TextElement dict.
+    Also extracts the shape's fill color as backgroundColor if present.
     """
     tf = shape.text_frame
     paragraphs = list(tf.paragraphs)
 
-    # Accumulate text content and formatting from all runs
     text_parts: List[str] = []
     font_family = None
     font_size = None
-    color = "#000000"
+    color = None
     bold = False
     italic = False
     align = "left"
     line_spacing = 1.2
 
     for p in paragraphs:
-        p_text = ""
-        runs = _safe_text_runs(p)
-        for run in runs:
-            p_text += run.text
-            # Pull formatting from first run that has it
-            if font_family is None:
-                ff = _get_font_name(run)
-                if ff:
-                    font_family = ff
-            if font_size is None:
-                fs = _get_font_size_pt(run)
-                if fs:
-                    font_size = fs
-            if color == "#000000" or color is None:
-                c = _get_color_str(run)
-                if c:
-                    color = c
-            if run.font.bold:
-                bold = True
-            if run.font.italic:
-                italic = True
+        formatted = _get_formatted_text_content(p, master_defaults)
+        text_parts.append(formatted["text"])
 
-        text_parts.append(p_text)
+        # Use the FIRST paragraph's formatting as the element-level formatting
+        if font_family is None and formatted["fontFamily"]:
+            font_family = formatted["fontFamily"]
+        if font_size is None and formatted["fontSize"]:
+            font_size = formatted["fontSize"]
+        if color is None and formatted["color"]:
+            color = formatted["color"]
+        if formatted["bold"]:
+            bold = True
+        if formatted["italic"]:
+            italic = True
 
         # Per-paragraph alignment
         align = _get_alignment(p)
@@ -319,6 +565,23 @@ def extract_text_element(
 
     content = "\n".join(text_parts)
 
+    # Extract shape fill as background color for the text element
+    bg_color = None
+    try:
+        fill = shape.fill
+        if fill.type == 1:  # SOLID_FILL
+            color_from_fill = _extract_color_from_fill(fill)
+            if color_from_fill:
+                bg_color = color_from_fill
+    except Exception:
+        pass
+
+    # Determine shape name for z-ordering
+    try:
+        shape_name = shape.name or ""
+    except Exception:
+        shape_name = ""
+
     return {
         "id": _new_id(),
         "type": "text",
@@ -334,29 +597,35 @@ def extract_text_element(
         "fontFamily": font_family or "Arial",
         "fontWeight": "bold" if bold else "normal",
         "fontStyle": "italic" if italic else "normal",
-        "color": color,
+        "color": color or "#000000",
         "textAlign": align,
         "lineHeight": line_spacing,
+        "backgroundColor": bg_color,
+        "shapeName": shape_name,
     }
 
 
 def extract_image_element(
-    shape, slide_width_emu: int, slide_height_emu: int
+    shape, slide_width_emu: int, slide_height_emu: int,
+    embed_images: bool = True
 ) -> Dict[str, Any]:
     """
     Convert a picture shape into an ImageElement dict.
-    Extracts the image as base64 data.
+    Extracts the image as base64 data when embed_images is True.
     """
     src = ""
     alt = shape.name or "Image"
-    try:
-        image = shape.image
-        blob = image.blob
-        ct = image.content_type
-        b64 = base64.b64encode(blob).decode("utf-8")
-        src = f"data:{ct};base64,{b64}"
-    except Exception as e:
-        logger.warning(f"Could not extract image from shape '{shape.name}': {e}")
+    if embed_images:
+        try:
+            image = shape.image
+            blob = image.blob
+            ct = image.content_type
+            b64 = base64.b64encode(blob).decode("utf-8")
+            src = f"data:{ct};base64,{b64}"
+        except Exception as e:
+            logger.warning(f"Could not extract image from shape '{shape.name}': {e}")
+    else:
+        src = "__PLACEHOLDER_IMAGE__"
 
     return {
         "id": _new_id(),
@@ -380,11 +649,6 @@ def _map_auto_shape_type(shape) -> str:
     """Map python-pptx auto shape types to our ShapeElement shape names."""
     try:
         ast = shape.auto_shape_type
-        # Common types:
-        # 1  = MSO_SHAPE.RECTANGLE
-        # 5  = MSO_SHAPE.OVAL
-        # 9  = MSO_SHAPE.ISOSCELES_TRIANGLE
-        # 15 = MSO_SHAPE.LINE (freeform / line)
         if ast == 1:
             return "rectangle"
         elif ast == 5:
@@ -394,7 +658,6 @@ def _map_auto_shape_type(shape) -> str:
         elif ast == 15:
             return "line"
         else:
-            # Try name-based mapping
             name = str(ast).lower()
             if "rect" in name:
                 return "rectangle"
@@ -420,6 +683,17 @@ def _extract_shape_fill(shape) -> str:
     except Exception:
         pass
     return "#CCCCCC"
+
+
+def _has_significant_text(shape) -> bool:
+    """Check if a shape has actual text content (not just empty paragraphs)."""
+    try:
+        if not shape.has_text_frame:
+            return False
+        text = shape.text_frame.text
+        return bool(text and text.strip())
+    except Exception:
+        return False
 
 
 def extract_shape_element(
@@ -465,12 +739,128 @@ def extract_shape_element(
     }
 
 
-# ─── Main Parse Entry Point ───────────────────────────────────────────────────
+def _process_shape(shape, slide_width_emu: int, slide_height_emu: int, embed_images: bool = True, master_defaults: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Process a single shape and return its element dict, or None if skipped."""
+    try:
+        shape_type = shape.shape_type
+
+        # ── SmartArt / Chart / Diagram ────────────────────────
+        if hasattr(shape, "has_chart") and shape.has_chart:
+            return {
+                "id": _new_id(),
+                "type": "shape",
+                "x": emu_to_percentage(shape.left, slide_width_emu),
+                "y": emu_to_percentage(shape.top, slide_height_emu),
+                "width": emu_to_percentage(shape.width, slide_width_emu),
+                "height": emu_to_percentage(shape.height, slide_height_emu),
+                "rotation": 0,
+                "zIndex": 0,
+                "opacity": 1.0,
+                "shape": "rectangle",
+                "fill": "#CCCCCC",
+                "_note": "chart (unsupported - rendered as placeholder)",
+            }
+
+        # Check for SmartArt
+        is_smart_art = False
+        try:
+            dgm = shape.element.find(qn("dgm:relIds"))
+            if dgm is not None:
+                is_smart_art = True
+        except Exception:
+            pass
+        if not is_smart_art:
+            try:
+                mc_elem = shape.element.find(qn("mc:AlternateContent"))
+                if mc_elem is not None:
+                    dgm_fallback = mc_elem.find(".//" + qn("dgm:relIds"))
+                    if dgm_fallback is not None:
+                        is_smart_art = True
+            except Exception:
+                pass
+
+        if is_smart_art:
+            return {
+                "id": _new_id(),
+                "type": "shape",
+                "x": emu_to_percentage(shape.left, slide_width_emu),
+                "y": emu_to_percentage(shape.top, slide_height_emu),
+                "width": emu_to_percentage(shape.width, slide_width_emu),
+                "height": emu_to_percentage(shape.height, slide_height_emu),
+                "rotation": 0,
+                "zIndex": 0,
+                "opacity": 1.0,
+                "shape": "rectangle",
+                "fill": "#CCCCCC",
+                "_note": "smartart (unsupported - rendered as placeholder)",
+            }
+
+        # ── Table ────────────────────────────────────────────
+        if shape_type == MSO_SHAPE_TYPE.TABLE or (
+            hasattr(shape, "has_table") and shape.has_table
+        ):
+            return {
+                "id": _new_id(),
+                "type": "shape",
+                "x": emu_to_percentage(shape.left, slide_width_emu),
+                "y": emu_to_percentage(shape.top, slide_height_emu),
+                "width": emu_to_percentage(shape.width, slide_width_emu),
+                "height": emu_to_percentage(shape.height, slide_height_emu),
+                "rotation": 0,
+                "zIndex": 0,
+                "opacity": 1.0,
+                "shape": "rectangle",
+                "fill": "#FFFFFF",
+                "_note": "table",
+            }
+
+        # ── Picture / Image ──────────────────────────────────
+        if shape_type == MSO_SHAPE_TYPE.PICTURE:
+            return extract_image_element(shape, slide_width_emu, slide_height_emu, embed_images=embed_images)
+
+        # ── Group shape ──────────────────────────────────────
+        if shape_type == MSO_SHAPE_TYPE.GROUP:
+            return {
+                "id": _new_id(),
+                "type": "shape",
+                "x": emu_to_percentage(shape.left, slide_width_emu),
+                "y": emu_to_percentage(shape.top, slide_height_emu),
+                "width": emu_to_percentage(shape.width, slide_width_emu),
+                "height": emu_to_percentage(shape.height, slide_height_emu),
+                "rotation": 0,
+                "zIndex": 0,
+                "opacity": 1.0,
+                "shape": "rectangle",
+                "fill": "#EEEEEE",
+                "_note": "group",
+            }
+
+        # ── Auto shape / Text box / Placeholder ──────────────
+        # KEY FIX: Check if the shape has actual text content.
+        # Shapes with a text frame but empty text (e.g. decorative rectangles)
+        # should be treated as ShapeElements, not TextElements.
+        has_text = _has_significant_text(shape)
+
+        if has_text:
+            # Extract text element, but also include fill color if present
+            return extract_text_element(shape, slide_width_emu, slide_height_emu, master_defaults)
+
+        # No significant text → treat as shape
+        return extract_shape_element(shape, slide_width_emu, slide_height_emu)
+
+    except Exception as e:
+        logger.warning(
+            f"Error processing shape '{getattr(shape, 'name', '?')}': {e}"
+        )
+        return None
+
+
+# ─── Theme Extraction ─────────────────────────────────────────────────────────
 
 
 def _extract_theme(prs: Presentation) -> Dict[str, Any]:
     """
-    Try to extract theme colours and fonts from the presentation's slide master.
+    Try to extract theme colours and fonts from the presentation's theme part.
     Falls back to sensible defaults.
     """
     theme = {
@@ -484,50 +874,51 @@ def _extract_theme(prs: Presentation) -> Dict[str, Any]:
     }
 
     try:
-        # Access theme from slide master XML
-        for slide_master in prs.slide_masters:
-            theme_elem = slide_master.element.find(
-                qn("p:clrMap")
-            )
-            # Get the theme override / theme element
-            # The actual theme is at the presentation part's theme part
-            break
+        # Access the theme part via the slide master
+        if not prs.slide_masters:
+            return theme
 
-        # Try to get theme from the presentation
-        # python-pptx stores theme in prs.slide_masters[0].element
-        if prs.slide_masters:
-            master = prs.slide_masters[0]
-            # Try to find clrScheme in the theme
-            theme_xml = master.element.xml
-            import re as _re
+        master_part = prs.slide_masters[0].part
+        for rel in master_part.rels.values():
+            if "theme" in rel.reltype:
+                theme_part = rel.target_part
+                theme_xml = theme_part._element.xml
+                break
+        else:
+            return theme
 
-            # Extract colour scheme from theme XML
-            # Look for <a:clrScheme name="...">
-            clr_match = _re.search(
-                r'<a:clrScheme[^>]*name="([^"]+)"',
-                theme_xml,
-            )
-            if clr_match:
-                theme["primaryColor"] = _extract_theme_color(
-                    theme_xml, "dk1"
-                ) or theme["primaryColor"]
-                theme["secondaryColor"] = _extract_theme_color(
-                    theme_xml, "dk2"
-                ) or theme["secondaryColor"]
-                theme["accentColor"] = _extract_theme_color(
-                    theme_xml, "accent1"
-                ) or theme["accentColor"]
-                theme["backgroundColor"] = _extract_theme_color(
-                    theme_xml, "lt1"
-                ) or theme["backgroundColor"]
+        # Extract color scheme from theme XML
+        clr_scheme = theme_part._element.find(qn("a:clrScheme"))
+        if clr_scheme is not None:
+            color_map = {}
+            for child in clr_scheme:
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                srgb = child.find(qn("a:srgbClr"))
+                if srgb is not None:
+                    color_map[tag.lower()] = f"#{srgb.get('val')}"
 
-            # Extract font scheme
-            major_font = _extract_theme_font(theme_xml, "major")
-            minor_font = _extract_theme_font(theme_xml, "minor")
-            if major_font:
-                theme["fontTitle"] = major_font
-            if minor_font:
-                theme["fontBody"] = minor_font
+            if "dk1" in color_map:
+                theme["primaryColor"] = color_map["dk1"]
+            if "dk2" in color_map:
+                theme["secondaryColor"] = color_map["dk2"]
+            if "accent1" in color_map:
+                theme["accentColor"] = color_map["accent1"]
+            if "lt1" in color_map:
+                theme["backgroundColor"] = color_map["lt1"]
+
+        # Extract font scheme
+        font_scheme = theme_part._element.find(qn("a:fontScheme"))
+        if font_scheme is not None:
+            major_font = font_scheme.find(qn("a:majorFont"))
+            minor_font = font_scheme.find(qn("a:minorFont"))
+            if major_font is not None:
+                latin = major_font.find(qn("a:latin"))
+                if latin is not None and latin.get("typeface"):
+                    theme["fontTitle"] = latin.get("typeface")
+            if minor_font is not None:
+                latin = minor_font.find(qn("a:latin"))
+                if latin is not None and latin.get("typeface"):
+                    theme["fontBody"] = latin.get("typeface")
 
     except Exception as e:
         logger.debug(f"Theme extraction failed (using defaults): {e}")
@@ -535,48 +926,91 @@ def _extract_theme(prs: Presentation) -> Dict[str, Any]:
     return theme
 
 
-def _extract_theme_color(xml: str, name: str) -> Optional[str]:
-    """Extract an sRGB colour from a theme colour scheme by colour name."""
-    import re as _re
-
-    # Look for <a:dk1>, <a:lt1>, <a:accent1>, etc.
-    pattern = (
-        r"<a:"
-        + re.escape(name)
-        + r"[^>]*>.*?<a:srgbClr val=\"([A-Fa-f0-9]{6})\".*?</a:"
-        + re.escape(name)
-        + r">"
-    )
-    match = _re.search(pattern, xml, re.DOTALL)
-    if match:
-        return f"#{match.group(1)}"
-    return None
+# ─── Master Default Text Styles ──────────────────────────────────────────────
 
 
-def _extract_theme_font(xml: str, scheme: str) -> Optional[str]:
-    """Extract a font name from the theme font scheme (major/minor)."""
-    import re as _re
+def _extract_master_default_font(prs: Presentation) -> Dict[str, Any]:
+    """Extract default font settings from the slide master's txStyles.
+    
+    This is the deepest fallback for text formatting — used when both
+    run-level and paragraph-level formatting are missing (common in
+    Google Slides exports).
+    """
+    defaults = {
+        "fontFamily": None,
+        "fontSize": None,
+        "color": None,
+    }
+    
+    try:
+        if not prs.slide_masters:
+            return defaults
+        
+        master = prs.slide_masters[0]
+        txStyles = master.element.find(qn("p:txStyles"))
+        if txStyles is None:
+            return defaults
+        
+        # Check bodyStyle first (most common for body text), then titleStyle
+        for style_name in ["p:bodyStyle", "p:titleStyle", "p:otherStyle"]:
+            style = txStyles.find(qn(style_name))
+            if style is None:
+                continue
+            
+            # Try lvl1pPr first (most common)
+            for pPr_path in ["a:lvl1pPr", "a:defPPr"]:
+                pPr = style.find(qn(pPr_path))
+                if pPr is None:
+                    continue
+                defRPr = pPr.find(qn("a:defRPr"))
+                if defRPr is None:
+                    continue
+                
+                if defaults["fontSize"] is None and defRPr.get("sz"):
+                    try:
+                        # sz is in hundredths of a point
+                        pt = int(defRPr.get("sz")) / 100
+                        if pt > 0:
+                            defaults["fontSize"] = round(pt, 1)
+                    except (ValueError, TypeError):
+                        pass
+                
+                if defaults["fontFamily"] is None:
+                    latin = defRPr.find(qn("a:latin"))
+                    if latin is not None and latin.get("typeface"):
+                        defaults["fontFamily"] = latin.get("typeface")
+                
+                if defaults["color"] is None:
+                    solidFill = defRPr.find(qn("a:solidFill"))
+                    if solidFill is not None:
+                        srgb = solidFill.find(qn("a:srgbClr"))
+                        if srgb is not None:
+                            defaults["color"] = f"#{srgb.get('val')}"
+                        else:
+                            scheme = solidFill.find(qn("a:schemeClr"))
+                            if scheme is not None:
+                                defaults["color"] = f"scheme:{scheme.get('val')}"
+            
+            # If we found at least some defaults, stop looking
+            if defaults["fontFamily"] or defaults["fontSize"]:
+                break
+    except Exception as e:
+        logger.debug(f"Failed to extract master font defaults: {e}")
+    
+    return defaults
 
-    # Look for <a:majorFont> or <a:minorFont>
-    pattern = (
-        r"<a:"
-        + re.escape(scheme)
-        + r"Font[^>]*>.*?<a:latin[^>]*typeface=\"([^\"]+)\".*?</a:"
-        + re.escape(scheme)
-        + r"Font>"
-    )
-    match = _re.search(pattern, xml, re.DOTALL)
-    if match:
-        return match.group(1)
-    return None
+
+# ─── Main Parse Entry Point ─────────────────────────────────────────────────--
 
 
-def parse_pptx(file_path: str) -> Dict[str, Any]:
+def parse_pptx(file_path: str, embed_images: bool = True) -> Dict[str, Any]:
     """
     Parse a .pptx file and produce a full SlidePresentation JSON dict.
 
     Args:
         file_path: Path to the .pptx file on disk.
+        embed_images: If True, embed images as base64 data URIs.
+                      If False, use a placeholder string for images.
 
     Returns:
         Dict matching the SlidePresentation TypeScript interface.
@@ -586,223 +1020,27 @@ def parse_pptx(file_path: str) -> Dict[str, Any]:
     slide_width_emu = prs.slide_width or DEFAULT_SLIDE_WIDTH_EMU
     slide_height_emu = prs.slide_height or DEFAULT_SLIDE_HEIGHT_EMU
 
+    # Build theme color map for resolving theme:xxx colors
+    theme_color_map = _build_theme_color_map(prs)
+
+    # Extract slide master default text styles for deep fallback
+    master_defaults = _extract_master_default_font(prs)
+
     slides_data: List[Dict[str, Any]] = []
 
     for idx, slide in enumerate(prs.slides):
-        background = extract_background(slide, slide_width_emu, slide_height_emu)
+        background = extract_background(slide, slide_width_emu, slide_height_emu, embed_images=embed_images)
+        # Resolve theme colors in background
+        background = _resolve_all_theme_colors(background, theme_color_map)
+
         elements: List[Dict[str, Any]] = []
 
         for shape in slide.shapes:
-            try:
-                shape_type = shape.shape_type
-
-                # ── SmartArt / Chart / Diagram ────────────────────────
-                # Check for chart first (has_chart attribute)
-                if hasattr(shape, "has_chart") and shape.has_chart:
-                    elements.append(
-                        {
-                            "id": _new_id(),
-                            "type": "shape",
-                            "x": emu_to_percentage(
-                                shape.left, slide_width_emu
-                            ),
-                            "y": emu_to_percentage(
-                                shape.top, slide_height_emu
-                            ),
-                            "width": emu_to_percentage(
-                                shape.width, slide_width_emu
-                            ),
-                            "height": emu_to_percentage(
-                                shape.height, slide_height_emu
-                            ),
-                            "rotation": 0,
-                            "zIndex": 0,
-                            "opacity": 1.0,
-                            "shape": "rectangle",
-                            "fill": "#CCCCCC",
-                            "_note": "chart (unsupported - rendered as placeholder)",
-                        }
-                    )
-                    continue
-
-                # Check for SmartArt / diagram via XML namespace
-                is_smart_art = False
-                try:
-                    dgm = shape.element.find(
-                        qn("dgm:relIds")
-                    )
-                    if dgm is not None:
-                        is_smart_art = True
-                except Exception:
-                    pass
-                # Another check: look for mc:AlternateContent with dgm namespace
-                if not is_smart_art:
-                    try:
-                        mc_elem = shape.element.find(
-                            qn("mc:AlternateContent")
-                        )
-                        if mc_elem is not None:
-                            dgm_fallback = mc_elem.find(
-                                ".//" + qn("dgm:relIds")
-                            )
-                            if dgm_fallback is not None:
-                                is_smart_art = True
-                    except Exception:
-                        pass
-
-                if is_smart_art:
-                    elements.append(
-                        {
-                            "id": _new_id(),
-                            "type": "shape",
-                            "x": emu_to_percentage(
-                                shape.left, slide_width_emu
-                            ),
-                            "y": emu_to_percentage(
-                                shape.top, slide_height_emu
-                            ),
-                            "width": emu_to_percentage(
-                                shape.width, slide_width_emu
-                            ),
-                            "height": emu_to_percentage(
-                                shape.height, slide_height_emu
-                            ),
-                            "rotation": 0,
-                            "zIndex": 0,
-                            "opacity": 1.0,
-                            "shape": "rectangle",
-                            "fill": "#CCCCCC",
-                            "_note": "smartart (unsupported - rendered as placeholder)",
-                        }
-                    )
-                    continue
-
-                # ── Table ────────────────────────────────────────────
-                if shape_type == MSO_SHAPE_TYPE.TABLE or (
-                    hasattr(shape, "has_table") and shape.has_table
-                ):
-                    elements.append(
-                        {
-                            "id": _new_id(),
-                            "type": "shape",
-                            "x": emu_to_percentage(
-                                shape.left, slide_width_emu
-                            ),
-                            "y": emu_to_percentage(
-                                shape.top, slide_height_emu
-                            ),
-                            "width": emu_to_percentage(
-                                shape.width, slide_width_emu
-                            ),
-                            "height": emu_to_percentage(
-                                shape.height, slide_height_emu
-                            ),
-                            "rotation": 0,
-                            "zIndex": 0,
-                            "opacity": 1.0,
-                            "shape": "rectangle",
-                            "fill": "#FFFFFF",
-                            "_note": "table",
-                        }
-                    )
-                    continue
-
-                # ── Picture / Image ──────────────────────────────────
-                if shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    elements.append(
-                        extract_image_element(
-                            shape, slide_width_emu, slide_height_emu
-                        )
-                    )
-                    continue
-
-                # ── Group shape ──────────────────────────────────────
-                if shape_type == MSO_SHAPE_TYPE.GROUP:
-                    # Could recursively expand group members;
-                    # for now, add as a placeholder rectangle
-                    elements.append(
-                        {
-                            "id": _new_id(),
-                            "type": "shape",
-                            "x": emu_to_percentage(
-                                shape.left, slide_width_emu
-                            ),
-                            "y": emu_to_percentage(
-                                shape.top, slide_height_emu
-                            ),
-                            "width": emu_to_percentage(
-                                shape.width, slide_width_emu
-                            ),
-                            "height": emu_to_percentage(
-                                shape.height, slide_height_emu
-                            ),
-                            "rotation": 0,
-                            "zIndex": 0,
-                            "opacity": 1.0,
-                            "shape": "rectangle",
-                            "fill": "#EEEEEE",
-                            "_note": "group",
-                        }
-                    )
-                    continue
-
-                # ── Placeholder ──────────────────────────────────────
-                if shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
-                    if shape.has_text_frame:
-                        elements.append(
-                            extract_text_element(
-                                shape, slide_width_emu, slide_height_emu
-                            )
-                        )
-                    else:
-                        elements.append(
-                            extract_shape_element(
-                                shape, slide_width_emu, slide_height_emu
-                            )
-                        )
-                    continue
-
-                # ── Auto shape (freeform, rectangle, oval, etc.) ─────
-                if shape_type in (
-                    MSO_SHAPE_TYPE.AUTO_SHAPE,
-                    MSO_SHAPE_TYPE.FREEFORM,
-                    MSO_SHAPE_TYPE.TEXT_BOX,
-                ):
-                    if shape.has_text_frame:
-                        elements.append(
-                            extract_text_element(
-                                shape, slide_width_emu, slide_height_emu
-                            )
-                        )
-                    else:
-                        elements.append(
-                            extract_shape_element(
-                                shape, slide_width_emu, slide_height_emu
-                            )
-                        )
-                    continue
-
-                # ── Fallback ─────────────────────────────────────────
-                # Any other shape type: try text, else shape
-                if shape.has_text_frame:
-                    elements.append(
-                        extract_text_element(
-                            shape, slide_width_emu, slide_height_emu
-                        )
-                    )
-                else:
-                    elements.append(
-                        extract_shape_element(
-                            shape, slide_width_emu, slide_height_emu
-                        )
-                    )
-
-            except Exception as e:
-                logger.warning(
-                    f"Error processing shape '{getattr(shape, 'name', '?')}' "
-                    f"on slide {idx}: {e}"
-                )
-                continue
+            element = _process_shape(shape, slide_width_emu, slide_height_emu, embed_images=embed_images, master_defaults=master_defaults)
+            if element is not None:
+                # Resolve theme colors in element properties
+                element = _resolve_all_theme_colors(element, theme_color_map)
+                elements.append(element)
 
         # ── Speaker notes ────────────────────────────────────────────
         speaker_notes = ""
@@ -838,16 +1076,38 @@ def parse_pptx(file_path: str) -> Dict[str, Any]:
         "slides": slides_data,
     }
 
+    # Resolve theme font references like "+mn-lt" to actual font names
+    def _resolve_theme_fonts(data):
+        if isinstance(data, dict):
+            resolved = {}
+            for k, v in data.items():
+                if isinstance(v, str) and v.startswith("+") and "-" in v:
+                    if v in ("+mn-lt", "+mn-ea"):
+                        resolved[k] = theme.get("fontBody", "Arial")
+                    elif v in ("+mj-lt", "+mj-ea"):
+                        resolved[k] = theme.get("fontTitle", "Arial")
+                    else:
+                        resolved[k] = v
+                else:
+                    resolved[k] = _resolve_theme_fonts(v)
+            return resolved
+        elif isinstance(data, list):
+            return [_resolve_theme_fonts(item) for item in data]
+        return data
+    
+    result = _resolve_theme_fonts(result)
+
     return result
 
 
-def parse_pptx_from_bytes(data: bytes, filename: str = "presentation.pptx") -> Dict[str, Any]:
+def parse_pptx_from_bytes(data: bytes, filename: str = "presentation.pptx", embed_images: bool = True) -> Dict[str, Any]:
     """
     Parse a .pptx file from raw bytes.
 
     Args:
         data: Raw bytes of the .pptx file.
         filename: Original filename (for title extraction).
+        embed_images: If True, embed images as base64 data URIs.
 
     Returns:
         Dict matching the SlidePresentation TypeScript interface.
@@ -861,7 +1121,7 @@ def parse_pptx_from_bytes(data: bytes, filename: str = "presentation.pptx") -> D
         tmp_path = tmp.name
 
     try:
-        result = parse_pptx(tmp_path)
+        result = parse_pptx(tmp_path, embed_images=embed_images)
         # Override title with the original filename
         if filename:
             title = filename.replace(".pptx", "").replace("_", " ").replace("-", " ").title()

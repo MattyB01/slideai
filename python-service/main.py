@@ -1,6 +1,6 @@
 import io
 import traceback
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from parser import parse_pptx_from_bytes as parse_pptx
@@ -23,12 +23,12 @@ async def health():
 
 
 @app.post("/parse")
-async def parse_pptx_endpoint(file: UploadFile = File(...)):
+async def parse_pptx_endpoint(file: UploadFile = File(...), embed_images: bool = Query(True, description="Embed images as base64 data URIs")):
     if not file.filename or not file.filename.endswith(".pptx"):
         raise HTTPException(400, "Only .pptx files are accepted")
     try:
         content = await file.read()
-        presentation = parse_pptx(content)
+        presentation = parse_pptx(content, embed_images=embed_images)
         return presentation
     except Exception as e:
         traceback.print_exc()
