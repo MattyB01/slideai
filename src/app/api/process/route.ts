@@ -1,8 +1,23 @@
 import { NextRequest } from 'next/server';
+import type { SlidePresentation } from '@/types/slide';
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://opencode.ai/zen/go/v1';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+
+interface ChangeEvent {
+  type: 'change';
+  slideIndex: number;
+  elementId?: string | null;
+  field: string;
+  value: unknown;
+}
+
+interface ThemeEvent {
+  type: 'theme';
+  field: string;
+  value: unknown;
+}
 
 const DESIGN_PRINCIPLES = `Professional Presentation Design Principles — based on analysis of 10 professionally designed PPTX decks.
 
@@ -32,82 +47,140 @@ const DESIGN_PRINCIPLES = `Professional Presentation Design Principles — based
 
 ## Shape Usage (Style Signature)
 - ≤20 shapes = Luxury/Elegant. 20-120 = Corporate. >600 = Template/structured.
-- Rectangles: universal — frames, backgrounds, bars, borders.
-- Triangles: use sparingly as design signature (mountains, arrows, direction).
-- Circles: rare — for tech diagrams, decorative bubbles.
 
 ## Image Strategy
 - Full-bleed (70%+): immersive, text with semi-transparent overlay.
 - Moderate (30-50%): premium, sits alongside content.
 - Small (<15%): supporting role.
-- Zero images: fully illustrative/vector approach with colored shapes.
 
 ## Style Archetypes — Pick One:
-1. Corporate Clean: White + dark gray + centered text. For reviews/status.
-2. Luxury Elegant: Deep teal + cream, minimal shapes, premium breathing room. For pitches/brand decks.
-3. Bold Dramatic: Saturated colors, high titles, impact through scale. For launches/marketing.
-4. Playful Colorful: 4+ colors, zero images, fully illustrative/vector. For events/youth.
-5. Tech Futuristic: Diagrams, icons, structured visual explanations. For tech/roadmaps.
-6. Minimal Professional: Single tint background, ~7 elements, breathing room. For proposals/startups.`;
+1. Corporate Clean: White + dark gray + centered text.
+2. Luxury Elegant: Deep teal + cream, minimal shapes.
+3. Bold Dramatic: Saturated colors, high titles, impact through scale.
+4. Playful Colorful: 4+ colors, zero images, fully illustrative.
+5. Tech Futuristic: Diagrams, icons, structured visual explanations.
+6. Minimal Professional: Single tint background, ~7 elements.`;
 
-const STREAMING_SYSTEM_PROMPT = `You are a professional presentation designer. You will receive a JSON representation of a presentation. Your job is to improve its visual design by outputting a SEQUENCE OF INCREMENTAL CHANGES, one JSON object per line.
+const SYSTEM_PROMPT = `You are a professional presentation designer. You will receive a JSON representation of a presentation. Your job is to improve its visual design.
 
 ${DESIGN_PRINCIPLES}
 
-CRITICAL RULES:
-- Output one JSON object per line (newline-separated). NO extra text, NO markdown fences, NO commentary.
-- Each line is a valid JSON object of type "change", "theme", or "done".
-- End with: {"type":"done"}
+Rules:
+1. Return ONLY valid JSON — no markdown fences, no commentary.
+2. The JSON must match the SlidePresentation schema exactly.
+3. Do NOT remove or truncate any text content — preserve ALL existing text.
+4. Propose a complete visual theme (colors, fonts, background style).
+5. VARY background colors between slides — do NOT make every slide the same color.
+6. Change LAYOUT (x, y, width, height) to improve visual hierarchy.
+7. Adjust font sizes: titles 40-54pt, body 28-32pt for presentation mode.
+8. Use Google Fonts: Inter, Roboto, Open Sans, Lora, Poppins, DM Sans, Instrument Serif.
+9. Ensure nothing is cut off — all elements must be fully within slide bounds (x + width ≤ 100, y + height ≤ 100).
+10. Ensure WCAG AA contrast ratios minimum 4.5:1.
+11. Add a background (color) to every slide.
+12. Where images would improve the slide, set src to "__STOCK__:{keywords}".
+13. Match the overall design archetype to the presentation's subject matter.
+14. Keep the same slide IDs and element IDs — do not change them.
+15. Return the full updated JSON object.`;
 
-SUPPORTED CHANGE FORMATS:
+/**
+ * Generate incremental changes by diffing old and new presentations.
+ */
+function generateChanges(
+  oldPres: SlidePresentation,
+  newPres: SlidePresentation,
+): (ChangeEvent | ThemeEvent)[] {
+  const changes: (ChangeEvent | ThemeEvent)[] = [];
+  const oldSlides = oldPres.slides;
+  const newSlides = newPres.slides;
 
-Slide background:
-{"type":"change","slideIndex":N,"field":"background.value","value":"#hexcolor"}
+  // Theme changes
+  const oldTheme = oldPres.theme;
+  const newTheme = newPres.theme;
+  if (oldTheme.primaryColor !== newTheme.primaryColor) {
+    changes.push({ type: 'theme', field: 'primaryColor', value: newTheme.primaryColor });
+  }
+  if (oldTheme.secondaryColor !== newTheme.secondaryColor) {
+    changes.push({ type: 'theme', field: 'secondaryColor', value: newTheme.secondaryColor });
+  }
+  if (oldTheme.accentColor !== newTheme.accentColor) {
+    changes.push({ type: 'theme', field: 'accentColor', value: newTheme.accentColor });
+  }
+  if (oldTheme.backgroundColor !== newTheme.backgroundColor) {
+    changes.push({ type: 'theme', field: 'backgroundColor', value: newTheme.backgroundColor });
+  }
+  if (oldTheme.fontTitle !== newTheme.fontTitle) {
+    changes.push({ type: 'theme', field: 'fontTitle', value: newTheme.fontTitle });
+  }
+  if (oldTheme.fontBody !== newTheme.fontBody) {
+    changes.push({ type: 'theme', field: 'fontBody', value: newTheme.fontBody });
+  }
+  if (oldTheme.borderRadius !== newTheme.borderRadius) {
+    changes.push({ type: 'theme', field: 'borderRadius', value: newTheme.borderRadius });
+  }
 
-Element position/size:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"x","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"y","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"width","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"height","value":N}
+  // Per-slide changes
+  for (let si = 0; si < Math.max(oldSlides.length, newSlides.length); si++) {
+    const oldSlide = oldSlides[si];
+    const newSlide = newSlides[si];
+    if (!oldSlide || !newSlide) continue;
 
-Text formatting:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontSize","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"color","value":"#hex"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontFamily","value":"Inter"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontWeight","value":"bold"|"normal"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontStyle","value":"italic"|"normal"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"textAlign","value":"left"|"center"|"right"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"lineHeight","value":1.5}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"opacity","value":1}
+    // Background
+    if (JSON.stringify(oldSlide.background) !== JSON.stringify(newSlide.background)) {
+      changes.push({
+        type: 'change',
+        slideIndex: si,
+        elementId: null,
+        field: 'background.value',
+        value: newSlide.background.value,
+      });
+    }
 
-Shape style:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fill","value":"#hex"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"backgroundColor","value":"#hex"}
+    // Element changes (matched by element ID)
+    const oldElements = oldSlide.elements;
+    const newElements = newSlide.elements;
+    const newElMap = new Map(newElements.map((el) => [el.id, el]));
 
-Images:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"src","value":"__STOCK__:search keywords"}
+    for (const oldEl of oldElements) {
+      const newEl = newElMap.get(oldEl.id);
+      if (!newEl) continue;
 
-Theme (applied globally):
-{"type":"theme","field":"primaryColor","value":"#hex"}
-{"type":"theme","field":"backgroundColor","value":"#hex"}
-{"type":"theme","field":"fontBody","value":"Inter"}
-{"type":"theme","field":"fontTitle","value":"Inter"}
+      // Compare element fields
+      if (oldEl.x !== newEl.x) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'x', value: newEl.x });
+      if (oldEl.y !== newEl.y) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'y', value: newEl.y });
+      if (oldEl.width !== newEl.width) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'width', value: newEl.width });
+      if (oldEl.height !== newEl.height) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'height', value: newEl.height });
+      if (oldEl.rotation !== newEl.rotation) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'rotation', value: newEl.rotation });
+      if (oldEl.opacity !== newEl.opacity) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'opacity', value: newEl.opacity });
+      if (oldEl.zIndex !== newEl.zIndex) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'zIndex', value: newEl.zIndex });
 
-Done marker (must be last line):
-{"type":"done"}
+      if (oldEl.type === 'text' && newEl.type === 'text') {
+        if (oldEl.fontSize !== newEl.fontSize) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'fontSize', value: newEl.fontSize });
+        if (oldEl.fontFamily !== newEl.fontFamily) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'fontFamily', value: newEl.fontFamily });
+        if (oldEl.fontWeight !== newEl.fontWeight) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'fontWeight', value: newEl.fontWeight });
+        if (oldEl.fontStyle !== newEl.fontStyle) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'fontStyle', value: newEl.fontStyle });
+        if (oldEl.color !== newEl.color) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'color', value: newEl.color });
+        if (oldEl.textAlign !== newEl.textAlign) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'textAlign', value: newEl.textAlign });
+        if (oldEl.lineHeight !== newEl.lineHeight) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'lineHeight', value: newEl.lineHeight });
+        if (oldEl.backgroundColor !== newEl.backgroundColor) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'backgroundColor', value: newEl.backgroundColor });
+        if (oldEl.padding !== newEl.padding) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'padding', value: newEl.padding });
+      }
 
-DESIGN TASK FOR THIS RUN:
-- Change backgrounds on every slide — vary colors across slides
-- Adjust layout (x, y, width, height) to create better visual hierarchy
-- Adjust font sizes: titles 40-54pt, body 28-32pt for presentation mode
-- Apply a coherent color scheme matching your chosen archetype
-- Update fonts to match the design archetype (max 2 families)
-- Set text alignment and padding for better readability
-- Add image placeholders with __STOCK__:keywords where images would improve the slide
-- Ensure nothing is cut off (x + width ≤ 100, y + height ≤ 100)
-- Ensure WCAG AA contrast (4.5:1 minimum)
-- Process slides in order, output all changes for slide 0, then slide 1, etc.
-- Change the ELEMENT ID in the response to match the EXACT element IDs from the input presentation`;
+      if (oldEl.type === 'image' && newEl.type === 'image') {
+        if (oldEl.src !== newEl.src) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'src', value: newEl.src });
+        if (oldEl.objectFit !== newEl.objectFit) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'objectFit', value: newEl.objectFit });
+        if (oldEl.borderRadius !== newEl.borderRadius) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'borderRadius', value: newEl.borderRadius });
+      }
+
+      if (oldEl.type === 'shape' && newEl.type === 'shape') {
+        if (oldEl.fill !== newEl.fill) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'fill', value: newEl.fill });
+        if (oldEl.stroke !== newEl.stroke) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'stroke', value: newEl.stroke });
+        if (oldEl.strokeWidth !== newEl.strokeWidth) changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field: 'strokeWidth', value: newEl.strokeWidth });
+      }
+    }
+  }
+
+  return changes;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -121,12 +194,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const oldPresentation = JSON.parse(JSON.stringify(presentation)) as SlidePresentation;
+
     const userMessage = themeContext
       ? `Apply this theme context: ${themeContext}\n\nPresentation:\n${JSON.stringify(presentation)}`
       : JSON.stringify(presentation);
 
-    // Call DeepSeek with streaming
-    const deepseekResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+    // Call DeepSeek (non-streaming) to get the full restyled presentation
+    const llmResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -135,121 +210,79 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: 'system', content: STREAMING_SYSTEM_PROMPT },
+          { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userMessage },
         ],
-        stream: true,
         temperature: 0.3,
         max_tokens: 64000,
       }),
     });
 
-    if (!deepseekResponse.ok) {
-      const errorText = await deepseekResponse.text();
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text();
       return new Response(JSON.stringify({ error: `AI service error: ${errorText}` }), {
         status: 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const encoder = new TextEncoder();
+    const data = await llmResponse.json();
+    const msg = data.choices?.[0]?.message;
+    const content = msg?.content || msg?.reasoning_content || '';
 
-    // Create a ReadableStream that proxies DeepSeek's SSE to our simpler SSE format
+    if (!content) {
+      return new Response(JSON.stringify({ error: 'Empty AI response' }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Extract JSON from response
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return new Response(JSON.stringify({ error: 'AI response was not valid JSON' }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const newPresentation = JSON.parse(jsonMatch[0]) as SlidePresentation;
+
+    // Generate diff changes
+    const changes = generateChanges(oldPresentation, newPresentation);
+
+    const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
-        const reader = deepseekResponse.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let changeCount = 0;
-        let streamEnded = false;
-
         const sendSSE = (data: unknown) => {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); } catch {}
         };
 
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        let changeCount = 0;
 
-            const chunk = decoder.decode(value, { stream: true });
-
-            // Parse DeepSeek's SSE format
-            // Each event: data: {...json...}\n\n
-            const sseEvents = chunk.split('\n');
-            for (const line of sseEvents) {
-              if (!line.startsWith('data: ')) continue;
-
-              const dataStr = line.slice(6).trim();
-              if (dataStr === '[DONE]') {
-                streamEnded = true;
-                continue;
-              }
-
-              try {
-                const deepseekData = JSON.parse(dataStr);
-                const content = deepseekData.choices?.[0]?.delta?.content || '';
-
-                if (!content) continue;
-
-                buffer += content;
-
-                // Check if we have complete newline-delimited JSON lines
-                let newlineIdx;
-                while ((newlineIdx = buffer.indexOf('\n')) >= 0) {
-                  const jsonLine = buffer.slice(0, newlineIdx).trim();
-                  buffer = buffer.slice(newlineIdx + 1);
-
-                  if (!jsonLine) continue;
-
-                  try {
-                    const change = JSON.parse(jsonLine);
-
-                    if (change.type === 'done') {
-                      streamEnded = true;
-                    } else if (change.type === 'change' || change.type === 'theme') {
-                      changeCount++;
-                      sendSSE(change);
-
-                      // Send progress update every 3 changes
-                      if (changeCount % 3 === 0) {
-                        sendSSE({ type: 'progress', changes: changeCount });
-                      }
-                    }
-                  } catch {
-                    // Line wasn't complete JSON yet — put it back and wait for more tokens
-                    buffer = jsonLine + '\n' + buffer;
-                    break;
-                  }
-                }
-              } catch {
-                // Skip unparseable SSE data lines
-              }
-            }
+        // Stream theme changes first
+        for (const change of changes) {
+          if (change.type === 'theme') {
+            changeCount++;
+            sendSSE(change);
           }
-
-          // Process remaining buffer
-          if (buffer.trim()) {
-            const remaining = buffer.trim();
-            try {
-              const change = JSON.parse(remaining);
-              if (change.type === 'change' || change.type === 'theme') {
-                changeCount++;
-                sendSSE(change);
-              }
-            } catch {
-              // Incomplete JSON at end — ignore
-            }
-          }
-
-          // Signal done
-          sendSSE({ type: 'done', changes: changeCount });
-        } catch (err) {
-          console.error('Stream processing error:', err);
-          sendSSE({ type: 'error', message: 'AI processing failed mid-stream' });
-        } finally {
-          controller.close();
         }
+
+        // Then stream slide changes in batches of 3
+        for (let i = 0; i < changes.length; i++) {
+          const change = changes[i];
+          if (change.type === 'theme') continue; // already sent
+
+          changeCount++;
+          sendSSE(change);
+
+          if ((i + 1) % 3 === 0) {
+            sendSSE({ type: 'progress', changes: changeCount });
+          }
+        }
+
+        sendSSE({ type: 'done', changes: changeCount });
+        try { controller.close(); } catch {}
       },
     });
 

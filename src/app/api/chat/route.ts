@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import type { SlidePresentation } from '@/types/slide';
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://opencode.ai/zen/go/v1';
@@ -22,56 +23,84 @@ When the user requests a change, return ONLY a JSON object with this structure:
 If the user asks for a new image, set value to "__GENERATE__:{prompt}" or "__STOCK__:{keywords}".
 Only return JSON. No other text.`;
 
-const STREAMING_SYSTEM_PROMPT_ALL = `You are an AI presentation editor. The user wants to modify the ENTIRE presentation.
+const SYSTEM_PROMPT_ALL = `You are an AI presentation editor. The user wants to modify the ENTIRE presentation.
 
-When the user requests a change, output a SEQUENCE OF INCREMENTAL CHANGES, one JSON object per line.
-
-CRITICAL RULES:
-- Output one JSON object per line (newline-separated). NO extra text, NO markdown fences, NO commentary.
-- Each line is a valid JSON object of type "change", "theme", or "done".
-- End with: {"type":"done"}
-
-SUPPORTED FORMATS:
-
-Slide background:
-{"type":"change","slideIndex":N,"field":"background.value","value":"#hexcolor"}
-
-Element position/size:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"x","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"y","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"width","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"height","value":N}
-
-Text formatting:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontSize","value":N}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"color","value":"#hex"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontFamily","value":"Inter"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontWeight","value":"bold"|"normal"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"fontStyle","value":"italic"|"normal"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"textAlign","value":"left"|"center"|"right"}
-{"type":"change","slideIndex":N,"elementId":"elID","field":"opacity","value":1}
-
-Images:
-{"type":"change","slideIndex":N,"elementId":"elID","field":"src","value":"__STOCK__:search keywords"}
-
-Theme (applied globally):
-{"type":"theme","field":"primaryColor","value":"#hex"}
-{"type":"theme","field":"backgroundColor","value":"#hex"}
-{"type":"theme","field":"fontBody","value":"Inter"}
-
-Done marker (must be last line):
-{"type":"done"}
+When the user requests a change, return the COMPLETE updated SlidePresentation JSON.
 
 Rules:
-1. Return the COMPLETE set of changes — not just the ones the user asked for.
+1. Return the FULL updated presentation JSON — not just the changes.
 2. Preserve all text content unless the user asks to change it.
-3. Do NOT remove images unless asked.
-4. Only output the change lines. No other text.`;
+3. Update the theme, backgrounds, layouts, and elements as requested.
+4. Do NOT remove images unless asked.
+5. Keep the same slide IDs and element IDs.
+6. Only return JSON. No other text.`;
+
+/**
+ * Generate incremental changes by diffing old and new presentations.
+ */
+function generateChanges(oldPres: SlidePresentation, newPres: SlidePresentation): any[] {
+  const changes: any[] = [];
+
+  // Theme changes
+  const oldTheme = oldPres.theme;
+  const newTheme = newPres.theme;
+  if (oldTheme.primaryColor !== newTheme.primaryColor)
+    changes.push({ type: 'theme', field: 'primaryColor', value: newTheme.primaryColor });
+  if (oldTheme.secondaryColor !== newTheme.secondaryColor)
+    changes.push({ type: 'theme', field: 'secondaryColor', value: newTheme.secondaryColor });
+  if (oldTheme.accentColor !== newTheme.accentColor)
+    changes.push({ type: 'theme', field: 'accentColor', value: newTheme.accentColor });
+  if (oldTheme.backgroundColor !== newTheme.backgroundColor)
+    changes.push({ type: 'theme', field: 'backgroundColor', value: newTheme.backgroundColor });
+  if (oldTheme.fontTitle !== newTheme.fontTitle)
+    changes.push({ type: 'theme', field: 'fontTitle', value: newTheme.fontTitle });
+  if (oldTheme.fontBody !== newTheme.fontBody)
+    changes.push({ type: 'theme', field: 'fontBody', value: newTheme.fontBody });
+
+  // Per-slide changes
+  for (let si = 0; si < Math.max(oldPres.slides.length, newPres.slides.length); si++) {
+    const oldSlide = oldPres.slides[si];
+    const newSlide = newPres.slides[si];
+    if (!oldSlide || !newSlide) continue;
+
+    if (JSON.stringify(oldSlide.background) !== JSON.stringify(newSlide.background)) {
+      changes.push({ type: 'change', slideIndex: si, elementId: null, field: 'background.value', value: newSlide.background.value });
+    }
+
+    const newElMap = new Map(newSlide.elements.map((el: any) => [el.id, el]));
+    for (const oldEl of oldSlide.elements) {
+      const newEl = newElMap.get(oldEl.id);
+      if (!newEl) continue;
+
+      const compare = (field: string) => {
+        if ((oldEl as any)[field] !== (newEl as any)[field])
+          changes.push({ type: 'change', slideIndex: si, elementId: oldEl.id, field, value: (newEl as any)[field] });
+      };
+
+      compare('x'); compare('y'); compare('width'); compare('height');
+      compare('rotation'); compare('opacity'); compare('zIndex');
+
+      if (oldEl.type === 'text' && newEl.type === 'text') {
+        compare('fontSize'); compare('fontFamily'); compare('fontWeight');
+        compare('fontStyle'); compare('color'); compare('textAlign');
+        compare('lineHeight'); compare('backgroundColor'); compare('padding');
+      }
+      if (oldEl.type === 'image' && newEl.type === 'image') {
+        compare('src'); compare('objectFit'); compare('borderRadius');
+      }
+      if (oldEl.type === 'shape' && newEl.type === 'shape') {
+        compare('fill'); compare('stroke'); compare('strokeWidth');
+      }
+    }
+  }
+
+  return changes;
+}
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, slideIndex, presentation, scope, stream } = body;
+    const { message, slideIndex, presentation, scope } = body;
 
     if (!message || !presentation) {
       return new Response(JSON.stringify({ error: 'Message and presentation required' }), {
@@ -80,6 +109,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const oldPresentation = JSON.parse(JSON.stringify(presentation)) as SlidePresentation;
+
     const userContent = JSON.stringify({
       message,
       currentSlideIndex: slideIndex ?? 0,
@@ -87,9 +118,9 @@ export async function POST(request: NextRequest) {
       scope: scope ?? 'slide',
     });
 
-    // If streaming requested for whole-show scope
-    if (stream === true && scope === 'all') {
-      const deepseekResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+    // Whole-show scope: streaming via diff
+    if (scope === 'all') {
+      const llmResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -98,105 +129,72 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           model: DEEPSEEK_MODEL,
           messages: [
-            { role: 'system', content: STREAMING_SYSTEM_PROMPT_ALL },
+            { role: 'system', content: SYSTEM_PROMPT_ALL },
             { role: 'user', content: userContent },
           ],
-          stream: true,
           temperature: 0.5,
           max_tokens: 32000,
         }),
       });
 
-      if (!deepseekResponse.ok) {
-        const errorText = await deepseekResponse.text();
+      if (!llmResponse.ok) {
+        const errorText = await llmResponse.text();
         return new Response(JSON.stringify({ error: `AI error: ${errorText}` }), {
           status: 502,
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
-      const encoder = new TextEncoder();
-      const stream2 = new ReadableStream({
-        async start(controller) {
-          const reader = deepseekResponse.body!.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let changeCount = 0;
+      const data = await llmResponse.json();
+      const msg = data.choices?.[0]?.message;
+      const content = msg?.content || msg?.reasoning_content || '';
 
+      if (!content) {
+        return new Response(JSON.stringify({ error: 'Empty AI response' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Extract JSON from response
+      const firstBrace = content.indexOf('{');
+      const lastBrace = content.lastIndexOf('}');
+      if (firstBrace === -1 || lastBrace === -1) {
+        return new Response(JSON.stringify({ error: 'Invalid AI response format' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const rawJson = content.slice(firstBrace, lastBrace + 1);
+      const newPresentation = JSON.parse(rawJson) as SlidePresentation;
+
+      // Generate diff and stream it
+      const changes = generateChanges(oldPresentation, newPresentation);
+
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
           const sendSSE = (data: unknown) => {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+            try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); } catch {}
           };
 
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
+          let changeCount = 0;
 
-              const chunk = decoder.decode(value, { stream: true });
-              const sseEvents = chunk.split('\n');
-
-              for (const line of sseEvents) {
-                if (!line.startsWith('data: ')) continue;
-                const dataStr = line.slice(6).trim();
-                if (dataStr === '[DONE]') continue;
-
-                try {
-                  const deepseekData = JSON.parse(dataStr);
-                  const content = deepseekData.choices?.[0]?.delta?.content || '';
-                  if (!content) continue;
-
-                  buffer += content;
-
-                  let newlineIdx;
-                  while ((newlineIdx = buffer.indexOf('\n')) >= 0) {
-                    const jsonLine = buffer.slice(0, newlineIdx).trim();
-                    buffer = buffer.slice(newlineIdx + 1);
-                    if (!jsonLine) continue;
-
-                    try {
-                      const change = JSON.parse(jsonLine);
-                      if (change.type === 'done') {
-                        sendSSE({ type: 'done', changes: changeCount });
-                        controller.close();
-                        return;
-                      }
-                      if (change.type === 'change' || change.type === 'theme') {
-                        changeCount++;
-                        sendSSE(change);
-                        if (changeCount % 3 === 0) {
-                          sendSSE({ type: 'progress', changes: changeCount });
-                        }
-                      }
-                    } catch {
-                      buffer = jsonLine + '\n' + buffer;
-                      break;
-                    }
-                  }
-                } catch {}
-              }
+          for (const change of changes) {
+            changeCount++;
+            sendSSE(change);
+            if (changeCount % 3 === 0) {
+              sendSSE({ type: 'progress', changes: changeCount });
             }
-
-            if (buffer.trim()) {
-              try {
-                const change = JSON.parse(buffer.trim());
-                if (change.type === 'change' || change.type === 'theme') {
-                  changeCount++;
-                  sendSSE(change);
-                }
-              } catch {}
-            }
-
-            sendSSE({ type: 'done', changes: changeCount });
-          } catch (err) {
-            console.error('Chat stream error:', err);
-            sendSSE({ type: 'error', message: 'Chat processing failed mid-stream' });
-          } finally {
-            controller.close();
           }
+
+          sendSSE({ type: 'done', changes: changeCount });
+          try { controller.close(); } catch {}
         },
       });
 
-      return new Response(stream2, {
+      return new Response(stream, {
         headers: {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -205,9 +203,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Non-streaming (slide scope or fallback)
-    const systemPrompt = scope === 'all' ? STREAMING_SYSTEM_PROMPT_ALL : SYSTEM_PROMPT_SLIDE;
-
+    // Single slide scope (non-streaming)
     const llmResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -217,7 +213,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: SYSTEM_PROMPT_SLIDE },
           { role: 'user', content: userContent },
         ],
         temperature: 0.5,
@@ -234,7 +230,8 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await llmResponse.json();
-    const content = data.choices?.[0]?.message?.content;
+    const msg = data.choices?.[0]?.message;
+    const content = msg?.content || msg?.reasoning_content || '';
 
     if (!content) {
       return new Response(JSON.stringify({ error: 'Empty AI response' }), {
