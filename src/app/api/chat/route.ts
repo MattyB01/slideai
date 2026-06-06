@@ -4,7 +4,7 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const DEEPSEEK_BASE_URL = process.env.DEEPSEEK_BASE_URL || 'https://opencode.ai/zen/go/v1';
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
-const SYSTEM_PROMPT = `You are an AI presentation editor. The user is viewing a slide. You have the full JSON of the presentation.
+const SYSTEM_PROMPT_SLIDE = `You are an AI presentation editor. The user is viewing a slide. You have the full JSON of the presentation.
 
 When the user requests a change, return ONLY a JSON object with this structure:
 {
@@ -22,19 +22,37 @@ When the user requests a change, return ONLY a JSON object with this structure:
 If the user asks for a new image, set value to "__GENERATE__:{prompt}" or "__STOCK__:{keywords}".
 Only return JSON. No other text.`;
 
+const SYSTEM_PROMPT_ALL = `You are an AI presentation editor. The user wants to modify the ENTIRE presentation.
+
+When the user requests a change, return ONLY a JSON object with this structure:
+{
+  "presentation": { /* the FULL updated SlidePresentation JSON */ },
+  "message": string
+}
+
+Rules:
+1. Return the COMPLETE updated presentation JSON — not just the changes.
+2. Preserve all text content unless the user asks to change it.
+3. Update the theme, backgrounds, layouts, and elements as requested.
+4. Do NOT remove images unless asked.
+5. Only return JSON. No other text.`;
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, slideIndex, presentation } = body;
+    const { message, slideIndex, presentation, scope } = body;
 
     if (!message || !presentation) {
       return NextResponse.json({ error: 'Message and presentation required' }, { status: 400 });
     }
 
+    const systemPrompt = scope === 'all' ? SYSTEM_PROMPT_ALL : SYSTEM_PROMPT_SLIDE;
+
     const userContent = JSON.stringify({
       message,
       currentSlideIndex: slideIndex ?? 0,
       presentation,
+      scope: scope ?? 'slide',
     });
 
     const llmResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
@@ -46,11 +64,11 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: userContent },
         ],
         temperature: 0.5,
-        max_tokens: 16000,
+        max_tokens: 32000,
       }),
     });
 

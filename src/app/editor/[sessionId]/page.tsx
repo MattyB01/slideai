@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useStore } from '@/lib/store';
 import Toolbar from '@/components/Toolbar';
@@ -14,6 +14,7 @@ export default function EditorPage() {
   const sessionId = params?.sessionId as string;
   const presentation = useStore((s) => s.presentation);
   const selectedElementId = useStore((s) => s.selectedElementId);
+  const [rightTab, setRightTab] = useState<'chat' | 'inspect'>('chat');
 
   // If no presentation is loaded, show a message
   if (!presentation) {
@@ -31,12 +32,7 @@ export default function EditorPage() {
           <p className="text-sm text-zinc-400">
             Upload a .pptx file from the home page to get started.
           </p>
-          <a
-            href="/"
-            className="mt-2 px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-lg hover:bg-zinc-800 transition-colors"
-          >
-            Go to Home
-          </a>
+          <a href="/" className="mt-2 px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-lg hover:bg-zinc-800 transition-colors">Go to Home</a>
         </div>
       </div>
     );
@@ -55,12 +51,24 @@ export default function EditorPage() {
         {/* Center: Slide Canvas */}
         <SlideEditor />
 
-        {/* Right: AI Chat */}
-        <ChatPanel />
-      </div>
+        {/* Right: Sidebar with tabs (Chat / Inspector) */}
+        <div className="flex flex-col w-80 border-l border-zinc-200 shrink-0">
+          {/* Tab switcher */}
+          <div className="flex border-b border-zinc-200 shrink-0">
+            <button onClick={() => setRightTab('chat')} className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${rightTab === 'chat' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-zinc-500 hover:text-zinc-700'}`}>
+              Chat
+            </button>
+            <button onClick={() => setRightTab('inspect')} className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${rightTab === 'inspect' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-zinc-500 hover:text-zinc-700'}`}>
+              Properties{selectedElementId ? <span className="ml-1.5 w-2 h-2 rounded-full bg-blue-500 inline-block" /> : ''}
+            </button>
+          </div>
 
-      {/* Bottom: Element Inspector */}
-      {selectedElementId && <ElementInspector />}
+          {/* Tab content */}
+          <div className="flex-1 overflow-hidden">
+            {rightTab === 'chat' ? <ChatPanel /> : <ElementInspector />}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

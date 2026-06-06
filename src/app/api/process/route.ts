@@ -21,11 +21,15 @@ Rules:
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { presentation } = body;
+    const { presentation, themeContext } = body;
 
     if (!presentation) {
       return NextResponse.json({ error: 'No presentation provided' }, { status: 400 });
     }
+
+    const userMessage = themeContext
+      ? `Apply this theme context: ${themeContext}\n\nPresentation:\n${JSON.stringify(presentation)}`
+      : JSON.stringify(presentation);
 
     const llmResponse = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -37,7 +41,7 @@ export async function POST(request: NextRequest) {
         model: DEEPSEEK_MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: JSON.stringify(presentation) },
+          { role: 'user', content: userMessage },
         ],
         temperature: 0.3,
         max_tokens: 32000,

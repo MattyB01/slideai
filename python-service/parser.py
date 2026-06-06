@@ -593,7 +593,7 @@ def extract_text_element(
         "zIndex": 0,
         "opacity": 1.0,
         "content": content,
-        "fontSize": font_size or 18,
+        "fontSize": font_size or 14,
         "fontFamily": font_family or "Arial",
         "fontWeight": "bold" if bold else "normal",
         "fontStyle": "italic" if italic else "normal",
